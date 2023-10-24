@@ -24,8 +24,7 @@ struct NodeInfo {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let local_addr: SocketAddr = "0.0.0.0:0".parse()?;
-
-    let socket = UdpSocket::bind(local_addr).await?;
+    let socket = UdpSocket::bind(&local_addr).await?;
     socket.set_broadcast(true)?;
 
     let nodes = Arc::new(RwLock::new(HashMap::<String, NodeInfo>::new()));
@@ -43,6 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let serialized_msg = serde_json::to_string(&msg).unwrap();
 
         loop {
+            println!("Sending UDP broadcast...");
             socket_for_broadcast.send_to(serialized_msg.as_bytes(), BROADCAST_ADDR).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
@@ -51,7 +51,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let nodes_clone = nodes.clone();
     tokio::spawn(async move {
         let listener = TcpListener::bind(("0.0.0.0", TCP_PORT)).await.unwrap();
+        println!("TCP listener started.");
         while let Ok((stream, _)) = listener.accept().await {
+            println!("Accepted new TCP connection.");
             tokio::spawn(handle_tcp_stream(stream, nodes_clone.clone()));
         }
     });
@@ -59,6 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = vec![0u8; 1024];
     loop {
         let (len, addr) = socket.recv_from(&mut buf).await?;
+        println!("Received data on UDP from {}", addr);
         let received_msg: Message = serde_json::from_slice(&buf[..len])?;
 
         if let Message::Handshake { node_name, tcp_addr } = received_msg {
@@ -77,6 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    println!("Sending heartbeat to {}", tcp_addr);
                     let mut stream = TcpStream::connect(tcp_addr).await.unwrap();
                     let heartbeat_msg = Message::Heartbeat;
                     let serialized_msg = serde_json::to_string(&heartbeat_msg).unwrap();
