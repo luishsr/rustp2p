@@ -15,6 +15,33 @@ enum Message {
     Greeting,
     Heartbeat,
     HeartbeatResponse,
+    SetValue { key: String, value: String }, // New Message for setting a value
+    GetValue { key: String },                // New Message for getting a value
+    ValueResponse { value: Option<String> }, // New Message for sending back the value or an acknowledgment
+    Sync { key: String, value: String }, // New message for synchronization
+}
+
+// Create a new struct for the key-value store
+struct KeyValueStore {
+    store: RwLock<HashMap<String, String>>,
+}
+
+impl KeyValueStore {
+    fn new() -> Self {
+        KeyValueStore {
+            store: RwLock::new(HashMap::new()),
+        }
+    }
+
+    async fn set(&self, key: String, value: String) {
+        let mut store = self.store.write().await;
+        store.insert(key, value);
+    }
+
+    async fn get(&self, key: &str) -> Option<String> {
+        let store = self.store.read().await;
+        store.get(key).cloned()
+    }
 }
 
 struct NodeInfo {
@@ -35,6 +62,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let local_addr: SocketAddr = "0.0.0.0:8888".parse()?;
     let socket = UdpSocket::bind(&local_addr).await?;
     socket.set_broadcast(true)?;
+
+    // Initialize the key-value store
+    let kv_store = Arc::new(KeyValueStore::new());
 
     let nodes = Arc::new(RwLock::new(HashMap::<String, NodeInfo>::new()));
 
@@ -69,7 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("TCP listener started.");
         while let Ok((stream, _)) = listener.accept().await {
             println!("Accepted new TCP connection.");
-            tokio::spawn(handle_tcp_stream(stream, nodes_clone.clone()));
+            tokio::spawn(handle_tcp_stream(stream, nodes_clone.clone(), kv_store.clone()));
         }
     });
 
@@ -112,7 +142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-async fn handle_tcp_stream(mut stream: TcpStream, nodes: Arc<RwLock<HashMap<String, NodeInfo>>>) {
+async fn handle_tcp_stream(mut stream: TcpStream, nodes: Arc<RwLock<HashMap<String, NodeInfo>>>, kv_store: Arc<KeyValueStore> ) {
     let mut buf = vec![0u8; 1024];
     let len = stream.read(&mut buf).await.unwrap();
     let received_msg: Message = serde_json::from_slice(&buf[..len]).unwrap();
@@ -123,6 +153,37 @@ async fn handle_tcp_stream(mut stream: TcpStream, nodes: Arc<RwLock<HashMap<Stri
             let response = Message::HeartbeatResponse;
             let serialized_response = serde_json::to_string(&response).unwrap();
             stream.write_all(serialized_response.as_bytes()).await.unwrap();
+        },
+        Message::SetValue { key, value } => {
+            println!("Received SetValue");
+            kv_store.set(key.clone(), value.clone()).await;
+
+            // Broadcast sync to all nodes
+            let nodes_guard = nodes.read().await;
+            for (_, node_info) in nodes_guard.iter() {
+                let mut stream = match TcpStream::connect(node_info.tcp_addr).await {
+                    Ok(stream) => stream,
+                    Err(_) => continue,
+                };
+                let sync_msg = Message::Sync { key: key.clone(), value: value.clone() };
+                let serialized_msg = serde_json::to_string(&sync_msg).unwrap();
+                let _ = stream.write_all(serialized_msg.as_bytes()).await;
+            }
+
+            let response = Message::ValueResponse { value: Some("Value set successfully.".to_string()) };
+            let serialized_response = serde_json::to_string(&response).unwrap();
+            stream.write_all(serialized_response.as_bytes()).await.unwrap();
+        },
+        Message::GetValue { key } => {
+            println!("Received GetValue");
+            let value = kv_store.get(&key).await;
+            let response = Message::ValueResponse { value };
+            let serialized_response = serde_json::to_string(&response).unwrap();
+            stream.write_all(serialized_response.as_bytes()).await.unwrap();
+        },
+        Message::Sync { key, value } => {
+            println!("Received Sync");
+            kv_store.set(key, value).await;
         },
         _ => {}
     }
