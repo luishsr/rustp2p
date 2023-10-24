@@ -3,6 +3,7 @@ use tokio::{net::{TcpListener, TcpStream, UdpSocket}, sync::RwLock};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use mac_address::MacAddressError;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const BROADCAST_ADDR: &str = "255.255.255.255:8888";
@@ -21,9 +22,17 @@ struct NodeInfo {
     tcp_addr: SocketAddr,
 }
 
+fn get_mac_address() -> Result<String, MacAddressError> {
+    let mac = mac_address::get_mac_address()?;
+    match mac {
+        Some(address) => Ok(address.to_string()),
+        None => Err(MacAddressError::InternalError),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let local_addr: SocketAddr = "0.0.0.0:0".parse()?;
+    let local_addr: SocketAddr = "0.0.0.0:8888".parse()?;
     let socket = UdpSocket::bind(&local_addr).await?;
     socket.set_broadcast(true)?;
 
@@ -34,11 +43,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let socket_for_broadcast = socket.clone();
 
     tokio::spawn(async move {
-        let tcp_addr = format!("{}:{}", "0.0.0.0", TCP_PORT).parse().unwrap();
-        let msg = Message::Handshake {
-            node_name: "Node1".to_string(),
-            tcp_addr,
-        };
+        match get_mac_address() {
+            Ok(node_name) => {
+                let tcp_addr = format!("{}:{}", "0.0.0.0", TCP_PORT).parse().unwrap();
+                let msg = Message::Handshake {
+                    node_name: node_name.clone(),
+                    tcp_addr,
+                };
         let serialized_msg = serde_json::to_string(&msg).unwrap();
 
         loop {
@@ -46,8 +57,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             socket_for_broadcast.send_to(serialized_msg.as_bytes(), BROADCAST_ADDR).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
+            },
+            Err(e) => {
+                eprintln!("Error fetching MAC address: {:?}", e);
+            }
+        }
     });
-
     let nodes_clone = nodes.clone();
     tokio::spawn(async move {
         let listener = TcpListener::bind(("0.0.0.0", TCP_PORT)).await.unwrap();
@@ -64,7 +79,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Received data on UDP from {}", addr);
         let received_msg: Message = serde_json::from_slice(&buf[..len])?;
 
+        let local_node_name = get_mac_address()?;
+
         if let Message::Handshake { node_name, tcp_addr } = received_msg {
+            // Ignore packets from ourselves
+            if node_name == local_node_name {
+                continue;
+            }
             println!("Received handshake from: {}", node_name);
             {
                 let mut nodes_guard = nodes.write().await;
