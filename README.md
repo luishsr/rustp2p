@@ -5,10 +5,15 @@ A simple yet powerful Peer-to-Peer key-value database implemented in Rust. This 
 Features
 
   UDP Handshake: Discover peers efficiently using UDP broadcasts.
+  
   TCP Communication: Ensures reliable communication between nodes.
+  
   Concurrent Access: Multi-threaded approach leveraging Tokio.
+  
   Simple Key-Value Store: A straightforward data model that can be extended for more complex use cases.
+  
   Command Line Interface (CLI): Directly interact with the database, set or get values, and manage nodes.
+  
 
 Getting Started
 
